@@ -9,6 +9,7 @@ import type {
   Person,
   PullState,
   Repo,
+  RepoBasics,
   Review,
 } from '@/types'
 
@@ -38,15 +39,21 @@ const STATUS = 'mergeable commits(last: 1) { nodes { commit { statusCheckRollup 
 const lists = (fields: string) => fields.match(/\b(?:first|last):\s*\d+/g)?.length ?? 0
 const pageSize = (...fields: string[]) => Math.floor(148 / Math.max(...fields.map(lists)))
 
+const BASICS = `id name nameWithOwner description isPrivate isArchived pushedAt owner { ${PERSON} }
+    primaryLanguage { name color }`
+
 const REPO = `
   fragment RepoFields on Repository {
-    id name nameWithOwner description isPrivate isArchived pushedAt owner { ${PERSON} }
-    primaryLanguage { name color }
+    ${BASICS}
     openIssues: issues(states: OPEN) { totalCount }
     openPrs: pullRequests(states: OPEN) { totalCount }
     allIssues: issues { totalCount }
     allPrs: pullRequests { totalCount }
   }`
+
+// The lists of what someone contributed to leave the counts out: GitHub works each one out per repository, and over the
+// few hundred repositories of one query it refuses the query.
+const REPO_BASICS = `fragment RepoBasics on Repository { ${BASICS} }`
 
 const PAGE = 'pageInfo { hasNextPage endCursor }'
 
@@ -80,6 +87,35 @@ export const USER_REPOS = `
 export const ONE_REPO = `
   query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ...RepoFields } }
   ${REPO}`
+
+// Recent contributions, by kind: GitHub keeps no full history here, so the search of what the person opened adds the
+// rest. Repositories the token can't read come back null.
+const contributed = (kind: string, type: string) =>
+  `${kind}: repositoriesContributedTo(first: 100, includeUserRepositories: true, contributionTypes: [${type}]) {
+    totalCount nodes { ...RepoBasics }
+  }`
+
+export const CONTRIBUTED = `
+  query($login: String!) {
+    user(login: $login) {
+      ${contributed('commit', 'COMMIT')}
+      ${contributed('pr', 'PULL_REQUEST')}
+      ${contributed('issue', 'ISSUE')}
+      ${contributed('review', 'PULL_REQUEST_REVIEW')}
+    }
+  }
+  ${REPO_BASICS}`
+
+/** A page of the pull requests or issues someone opened, the latest first, with where. */
+export const opened = (list: 'pullRequests' | 'issues') => `
+  query($login: String!, $after: String) {
+    user(login: $login) {
+      list: ${list}(first: 100, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
+        ${PAGE} nodes { createdAt repository { ...RepoBasics } }
+      }
+    }
+  }
+  ${REPO_BASICS}`
 
 /**
  * Issues and pull requests, by what each part calls them: the items, a repository's counts of the open and of all of
@@ -177,7 +213,7 @@ export interface Page<T> {
   nodes: T[]
 }
 
-export interface RawRepo {
+export interface RawRepoBasics {
   id: string
   name: string
   nameWithOwner: string
@@ -187,13 +223,16 @@ export interface RawRepo {
   pushedAt: string | null
   owner: { login: string; avatarUrl: string }
   primaryLanguage: Language | null
+}
+
+export interface RawRepo extends RawRepoBasics {
   openIssues: { totalCount: number }
   openPrs: { totalCount: number }
   allIssues: { totalCount: number }
   allPrs: { totalCount: number }
 }
 
-export function toRepo(raw: RawRepo): Repo {
+export function toRepoBasics(raw: RawRepoBasics): RepoBasics {
   return {
     id: raw.id,
     owner: raw.owner.login,
@@ -205,6 +244,12 @@ export function toRepo(raw: RawRepo): Repo {
     isPrivate: raw.isPrivate,
     isArchived: raw.isArchived,
     pushedAt: raw.pushedAt,
+  }
+}
+
+export function toRepo(raw: RawRepo): Repo {
+  return {
+    ...toRepoBasics(raw),
     openIssues: raw.openIssues.totalCount,
     openPrs: raw.openPrs.totalCount,
     issues: raw.allIssues.totalCount,

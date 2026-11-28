@@ -6,11 +6,12 @@ import UFormField from '@nuxt/ui/components/FormField.vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import UTooltip from '@nuxt/ui/components/Tooltip.vue'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, nextTick, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import BrandMark from '@/components/BrandMark.vue'
 import ChoiceGroup from '@/components/ChoiceGroup.vue'
+import ContribPicker from '@/components/ContribPicker.vue'
 import LanguageSwitch from '@/components/LanguageSwitch.vue'
 import RepoPicker from '@/components/RepoPicker.vue'
 import SetupPreview from '@/components/SetupPreview.vue'
@@ -52,6 +53,9 @@ const another = ref('')
 const anotherError = ref('')
 const adding = ref(false)
 const name = ref(workspace?.name ?? '')
+// Settings can open the setup on the repositories the person contributed to.
+const contributing = ref(ui.contributions)
+const contributions = ref<HTMLElement | null>(null)
 
 const choices = computed<SourceChoice[]>(() => {
   if (!viewer.value) return []
@@ -99,6 +103,7 @@ async function check() {
     scopes.value = client.scopes()
     gh.value = client
     checkedToken.value = asked
+    if (contributing.value) void nextTick(() => contributions.value?.scrollIntoView({ block: 'start' }))
     if (!picked.value.length) {
       const org = viewer.value.organizations[0]
       picked.value = [org ? { kind: 'org', name: org.login } : { kind: 'user', name: viewer.value.login }]
@@ -338,6 +343,31 @@ function finish() {
               :only="source.only"
               class="border-t border-default"
               @update:only="bringOnly(source, $event)"
+            />
+          </div>
+          <div ref="contributions" class="scroll-mt-6 rounded-lg border border-default">
+            <button
+              type="button"
+              class="flex w-full items-center gap-3 rounded-lg p-3 text-start transition-colors hover:bg-elevated/50"
+              :aria-expanded="contributing"
+              @click="contributing = !contributing"
+            >
+              <span class="min-w-0 flex-1">
+                <span class="block text-sm font-medium text-highlighted">{{ t('contrib.title') }}</span>
+                <span class="block text-xs text-muted">{{ t('contrib.help') }}</span>
+              </span>
+              <UIcon
+                name="i-octicon-chevron-down-16"
+                class="size-4 shrink-0 text-muted transition-transform"
+                :class="contributing && 'rotate-180'"
+              />
+            </button>
+            <ContribPicker
+              v-if="contributing && gh"
+              v-model:picked="picked"
+              :gh="gh"
+              :login="viewer.login"
+              class="border-t border-default"
             />
           </div>
           <form class="space-y-2" @submit.prevent="addAnother">

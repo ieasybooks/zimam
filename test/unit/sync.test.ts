@@ -61,8 +61,11 @@ const searches = (queries: string[]) => queries.map((q) => q.split(' ').toSorted
 // Whether a search has each of these terms.
 const has = (q: string, ...terms: string[]) => terms.every((term) => q.split(' ').includes(term))
 const byRepo = (q: string) => /(^| )repo:/.test(q)
-const byPart = (q: string) => /(^| )is:/.test(q)
+const byPart = (q: string) => /(^| )is:(open|closed)( |$)/.test(q)
 const labels = (many: number) => ({ nodes: Array.from({ length: many }, (_, n) => ({ name: `l${n}`, color: '' })) })
+
+// A look for changes: the issues and the pull requests are searched apart.
+const LOOK = ['search', 'search']
 
 /** A GitHub whose answers to queries are `query`'s, with nothing changed since the last look and nothing else to read. */
 const answering = (query: GitHub['query']): GitHub => ({
@@ -110,6 +113,7 @@ function fakeGitHub() {
     rateLimited: false,
     calls: [] as string[],
     pageSize: Infinity,
+    searchPage: Infinity,
     onQuery: () => {},
   }
 
@@ -168,7 +172,8 @@ function fakeGitHub() {
     }
     if (call === 'search') {
       // Like GitHub: a time from one second to another, both included, or from one on, and no more than 1,000
-      // results listed. And of one kind, open or closed, or in one repository, when the query says so.
+      // results listed, a page at a time. Of one kind, as with a fine-grained token, which finds nothing unless the
+      // query says which. And open or closed, or in one repository, when the query says so.
       const q = variables.q as string
       const span = /updated:(\S+)\.\.(\S+)/.exec(q) ?? /updated:>=(\S+)()/.exec(q)
       const kind = /is:(issue|pr)\b/.exec(q)?.[1]
@@ -179,12 +184,17 @@ function fakeGitHub() {
           (!span ||
             (second(node.updatedAt) >= second(span[1]) && (!span[2] || second(node.updatedAt) <= second(span[2])))) &&
           (!repo || node.repository.id === (repo === 'web' ? 'R1' : repo)) &&
-          (!kind || (node.kind === 'PullRequest') === (kind === 'pr')) &&
+          !!kind &&
+          (node.kind === 'PullRequest') === (kind === 'pr') &&
           (!open || (node.state === 'OPEN') === (open === 'open')),
       )
       state.searched.push(span?.[2] ? `${span[1]}..${span[2]}` : 'since')
       state.queries.push(q)
-      return done({ search: { issueCount: matching.length, ...page(matching.slice(0, 1000)) } })
+      const listed = matching.slice(0, 1000)
+      const start = Number(variables.after ?? 0)
+      const end = Math.min(listed.length, start + state.searchPage)
+      const pageInfo = { hasNextPage: end < listed.length, endCursor: String(end) }
+      return done({ search: { issueCount: matching.length, pageInfo, nodes: listed.slice(start, end) } })
     }
     if (call === 'requested')
       return done({ viewer: { login: 'ali' }, search: page(state.requested.map((id) => ({ id }))) })
@@ -368,13 +378,13 @@ describe('Syncer', () => {
     expect(started).toEqual(['busy', 'mid', 'quiet', 'unknown', 'old'])
   })
 
-  it('picks up a change with one search, and marks it as news', async () => {
+  it('picks up a change with one search of each kind, and marks it as news', async () => {
     const { store, state, syncer, fresh } = await setup()
     await syncer.sync()
     state.searchResults = [raw('I1', 'CLOSED', new Date().toISOString())]
     state.calls = []
     await syncer.sync()
-    expect(state.calls).toEqual(['search'])
+    expect(state.calls).toEqual(LOOK)
     expect(store.items.get('I1')?.state).toBe('closed')
     expect(fresh).toEqual(['I1'])
   })
@@ -406,7 +416,7 @@ describe('Syncer', () => {
     state.searched = []
     state.searchResults = []
     await syncer.sync(true)
-    expect(state.searched).toEqual(['since'])
+    expect(state.searched).toEqual(['since', 'since'])
   })
 
   it('shows and keeps the parts of the time away it searched when GitHub fails partway', async () => {
@@ -428,15 +438,15 @@ describe('Syncer', () => {
     expect(kept).toBeLessThan(1500)
   })
 
-  it('searches a second holding more changes than a search lists by kind, open and closed', async () => {
+  it('searches a second holding more changes of a kind than a search lists, open and closed apart', async () => {
     const { store, state, syncer } = await setup()
     await syncer.sync()
     let now = Date.now() + HOUR
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const once = new Date(now - 5 * MINUTE).toISOString()
-    // A change made to 1,100 items at once: open and closed issues, and pull requests.
+    // A change made to 1,200 items at once: open and closed issues, and pull requests.
     state.searchResults = [
-      ...Array.from({ length: 500 }, (_, index) => raw(`I${100 + index}`, 'OPEN', once)),
+      ...Array.from({ length: 600 }, (_, index) => raw(`I${100 + index}`, 'OPEN', once)),
       ...Array.from({ length: 500 }, (_, index) => raw(`I${700 + index}`, 'CLOSED', once)),
       ...Array.from({ length: 100 }, (_, index) => raw(`P${100 + index}`, 'MERGED', once, true)),
     ]
@@ -445,11 +455,13 @@ describe('Syncer', () => {
     expect(state.searchResults.every((node) => store.items.has(node.id))).toBe(true)
     expect(searches(state.queries.filter(byPart))).toEqual(
       searches(
-        ['is:issue is:open', 'is:issue is:closed', 'is:pr is:open', 'is:pr is:closed'].map(
-          (terms) => `org:acme ${terms} updated:${secondOf(once)}..${secondOf(once)}`,
+        ['is:open', 'is:closed'].map(
+          (terms) => `org:acme is:issue ${terms} updated:${secondOf(once)}..${secondOf(once)}`,
         ),
       ),
     )
+    // The pull requests' search lists all of its own.
+    expect(state.queries.filter((q) => has(q, 'is:pr'))).toHaveLength(1)
     // Nothing needed reading again from the repository.
     expect(state.calls).not.toContain('items')
   })
@@ -473,7 +485,7 @@ describe('Syncer', () => {
     const during = `updated:${secondOf(once)}..${secondOf(once)}`
     const bySource = state.queries.filter((q) => has(q, during) && !byPart(q))
     expect(searches(bySource)).toEqual(
-      searches([`org:acme org:beta ${during}`, `org:acme ${during}`, `org:beta ${during}`]),
+      searches([`org:acme org:beta is:issue ${during}`, `org:acme is:issue ${during}`, `org:beta is:issue ${during}`]),
     )
     expect(searches(state.queries.filter((q) => has(q, 'is:issue', 'is:closed')))).toEqual(
       searches([`org:acme is:issue is:closed ${during}`, `org:beta is:issue is:closed ${during}`]),
@@ -502,7 +514,7 @@ describe('Syncer', () => {
     state.searched = []
     state.searchResults = []
     await syncer.sync(true)
-    expect(state.searched).toEqual(['since'])
+    expect(state.searched).toEqual(['since', 'since'])
   })
 
   it('shows issues closed at once in a crowded second as closed, before the closed history loads', async () => {
@@ -1347,6 +1359,79 @@ const change = (id: string, repo: string) => ({
   repository: { id: repo },
 })
 
+// The window a search for changes looks back over, from one second on.
+const sinceOf = (q: string) => /updated:>=(\S+)/.exec(q)?.[1]
+
+describe('Syncer searching for changes', () => {
+  it('searches the issues and the pull requests apart, over the same window, once each', async () => {
+    const { state, syncer } = await setup()
+    await syncer.sync()
+    state.queries = []
+    await syncer.sync()
+    const since = sinceOf(state.queries[0] ?? '')
+    expect(since).toBeDefined()
+    expect(state.queries).toEqual([`org:acme is:issue updated:>=${since}`, `org:acme is:pr updated:>=${since}`])
+  })
+
+  it('pages through each search with its own cursor', async () => {
+    const fake = await setup()
+    const { store, state, syncer } = fake
+    await syncer.sync()
+    const now = new Date().toISOString()
+    state.searchResults = [
+      raw('I1', 'CLOSED', now),
+      raw('I3', 'OPEN', now),
+      raw('P2', 'MERGED', now, true),
+      raw('P4', 'CLOSED', now, true),
+    ]
+    state.searchPage = 1
+    const pages: string[] = []
+    const query = fake.gh.query.bind(fake.gh)
+    fake.gh.query = async <T>(text: string, variables: Record<string, unknown> = {}) => {
+      if (text === SEARCH)
+        pages.push(`${/is:\w+/.exec(variables.q as string)?.[0]} ${(variables.after as string | null) ?? 'first'}`)
+      return query<T>(text, variables)
+    }
+    await syncer.sync()
+    expect(pages).toEqual(['is:issue first', 'is:issue 1', 'is:pr first', 'is:pr 1'])
+    expect(['I1', 'I3', 'P2', 'P4'].map((id) => store.items.get(id)?.state)).toEqual([
+      'closed',
+      'open',
+      'merged',
+      'closed',
+    ])
+  })
+
+  it('looks back as far again after the pull requests’ search fails, taking nothing from the issues’', async () => {
+    const fake = await setup()
+    const { store, state, status, syncer } = fake
+    await syncer.sync()
+    const start = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => start + 2 * MINUTE)
+    state.searchResults = [raw('I1', 'CLOSED', new Date(start + MINUTE).toISOString())]
+    let failing = true
+    const query = fake.gh.query.bind(fake.gh)
+    fake.gh.query = async <T>(text: string, variables: Record<string, unknown> = {}) => {
+      if (failing && text === SEARCH && (variables.q as string).includes('is:pr'))
+        throw new GitHubError('GitHub answered 502', 'server')
+      return query<T>(text, variables)
+    }
+    state.queries = []
+    await syncer.sync()
+    expect(status.error).toBe('server')
+    // Nothing of a look that didn't finish is taken.
+    expect(store.items.get('I1')?.state).toBe('open')
+    const [failed] = state.queries.map(sinceOf)
+
+    vi.spyOn(Date, 'now').mockImplementation(() => start + 4 * MINUTE)
+    failing = false
+    state.queries = []
+    await syncer.sync()
+    expect(state.queries.map(sinceOf)).toEqual([failed, failed])
+    expect(store.items.get('I1')?.state).toBe('closed')
+  })
+})
+
 describe('Syncer with only some repositories picked', () => {
   it('reads only the repositories picked', async () => {
     const { store, state, syncer } = await setup(picking('R1'))
@@ -1363,7 +1448,7 @@ describe('Syncer with only some repositories picked', () => {
     state.searchResults = [change('I9', 'api')]
     state.calls = []
     await syncer.sync()
-    expect(state.calls).toEqual(['search', 'repos'])
+    expect(state.calls).toEqual([...LOOK, 'repos'])
     state.calls = []
     await syncer.sync()
     expect(state.calls).not.toContain('repos')
@@ -1447,16 +1532,16 @@ describe('Syncer in a quiet workspace', () => {
 
   it('skips the search while GitHub says nothing changed, and searches at least every five minutes', async () => {
     const { minute } = await settled()
-    expect(await minute()).toEqual(['search'])
+    expect(await minute()).toEqual(LOOK)
     // The first question has nothing to compare with yet.
-    expect(await minute()).toEqual(['probe', 'search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
     expect(await minute()).toEqual(['probe'])
     expect(await minute()).toEqual(['probe'])
     expect(await minute()).toEqual(['probe'])
     expect(await minute()).toEqual(['probe'])
-    expect(await minute()).toEqual(['search'])
+    expect(await minute()).toEqual(LOOK)
     // A refresh always searches.
-    expect(await minute(true)).toEqual(['search'])
+    expect(await minute(true)).toEqual(LOOK)
   })
 
   it('searches when GitHub says something changed, and keeps searching while search catches up', async () => {
@@ -1465,10 +1550,10 @@ describe('Syncer in a quiet workspace', () => {
     await minute()
     expect(await minute()).toEqual(['probe'])
     state.probes[ORG] = 'changed'
-    expect(await minute()).toEqual(['probe', 'search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
     state.probes[ORG] = 'same'
-    expect(await minute()).toEqual(['search'])
-    expect(await minute()).toEqual(['search'])
+    expect(await minute()).toEqual(LOOK)
+    expect(await minute()).toEqual(LOOK)
     expect(await minute()).toEqual(['probe'])
   })
 
@@ -1476,8 +1561,8 @@ describe('Syncer in a quiet workspace', () => {
     const { state, minute } = await settled()
     await minute()
     state.searchResults = [raw('I1', 'OPEN', new Date(Date.now() + MINUTE).toISOString())]
-    expect(await minute()).toEqual(['probe', 'search'])
-    expect(await minute()).toEqual(['search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
+    expect(await minute()).toEqual(LOOK)
     // That search found nothing new, so the next minute asks first.
     expect(await minute()).toEqual(['probe'])
   })
@@ -1486,9 +1571,9 @@ describe('Syncer in a quiet workspace', () => {
     const { state, minute } = await settled()
     await minute()
     state.probes[ORG] = 'unsupported'
-    expect(await minute()).toEqual(['probe', 'search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
     state.probed = []
-    expect(await minute()).toEqual(['probe', 'search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
     expect(await minute()).toEqual(['probe'])
     expect(state.probed).toEqual([REPO, REPO])
   })
@@ -1498,9 +1583,9 @@ describe('Syncer in a quiet workspace', () => {
     await minute()
     state.probes[ORG] = 'unsupported'
     state.probes[REPO] = 'unsupported'
-    expect(await minute()).toEqual(['probe', 'search'])
-    expect(await minute()).toEqual(['probe', 'search'])
-    expect(await minute()).toEqual(['search'])
-    expect(await minute()).toEqual(['search'])
+    expect(await minute()).toEqual(['probe', ...LOOK])
+    expect(await minute()).toEqual(['probe', ...LOOK])
+    expect(await minute()).toEqual(LOOK)
+    expect(await minute()).toEqual(LOOK)
   })
 })

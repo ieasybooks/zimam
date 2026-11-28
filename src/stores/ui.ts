@@ -5,6 +5,8 @@ export const ui = reactive({
   settingsOpen: false,
   keysOpen: false,
   setup: null as 'new' | 'edit' | null,
+  /** Whether the setup opens on the repositories the person contributed to. */
+  contributions: false,
 })
 
 // From 80rem, Tailwind's `xl`, an issue opens beside the list, where another row is a click away. Narrower screens lay
@@ -23,8 +25,8 @@ export const phone = ref(PHONE.matches)
 LARGE.addEventListener('change', (event) => (large.value = event.matches))
 PHONE.addEventListener('change', (event) => (phone.value = event.matches))
 
-export function openSetup(mode: 'new' | 'edit') {
-  Object.assign(ui, { menuOpen: false, settingsOpen: false, setup: mode })
+export function openSetup(mode: 'new' | 'edit', contributions = false) {
+  Object.assign(ui, { menuOpen: false, settingsOpen: false, setup: mode, contributions })
 }
 
 export function openSettings() {

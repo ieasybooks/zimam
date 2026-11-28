@@ -95,7 +95,8 @@ export interface Settings {
   activeWorkspaceId: string | null
 }
 
-export interface Repo {
+/** A repository without its counts, as the lists of what someone contributed to show it. */
+export interface RepoBasics {
   id: string
   owner: string
   ownerAvatar: string
@@ -107,6 +108,9 @@ export interface Repo {
   isArchived: boolean
   /** The last push to any branch. */
   pushedAt: string | null
+}
+
+export interface Repo extends RepoBasics {
   openIssues: number
   openPrs: number
   issues: number

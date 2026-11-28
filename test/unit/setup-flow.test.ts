@@ -59,6 +59,7 @@ vi.mock('@nuxt/ui/components/Checkbox.vue', stand('span'))
 vi.mock('@nuxt/ui/components/FieldGroup.vue', stand('div'))
 vi.mock('@nuxt/ui/components/Skeleton.vue', stand('div'))
 vi.mock('@nuxt/ui/components/Popover.vue', stand('span'))
+vi.mock('@nuxt/ui/components/DropdownMenu.vue', stand('span'))
 
 // GitHub knows one account by each token it accepts, and answers when a test lets it.
 const github = vi.hoisted(() => ({

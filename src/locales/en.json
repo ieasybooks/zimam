@@ -46,6 +46,46 @@
     "code": "Zimam on GitHub",
     "openSource": "Open source on GitHub"
   },
+  "contrib": {
+    "title": "My contributions",
+    "help": "Repositories you committed to, opened pull requests or issues in, or reviewed",
+    "open": "Find my contributions",
+    "loading": "Gathering your contributions from GitHub…",
+    "failed": "Couldn't load your contributions",
+    "none": "GitHub lists no contributions this token can read",
+    "noneRead": "No contributions this token can read in what Zimam read. There may be more beyond it.",
+    "reposCut": "Some repositories may be missing: GitHub lists only your 100 most recent of some kinds of contribution, or you opened more than Zimam reads.",
+    "countsCut": "You opened more than the latest 1,000 pull requests or issues Zimam reads, so the counts marked + may be higher.",
+    "search": "Search repositories and descriptions",
+    "kindsTitle": "Contribution",
+    "kinds": {
+      "commit": "Commits",
+      "pr": "Pull requests",
+      "issue": "Issues",
+      "review": "Reviews"
+    },
+    "sorts": {
+      "recent": "Last opened",
+      "most": "Most opened",
+      "name": "Name"
+    },
+    "stats": {
+      "repos": "Repositories",
+      "owners": "Accounts",
+      "prs": "Pull requests",
+      "issues": "Issues"
+    },
+    "prs": "no pull requests | 1 pull request | {n} pull requests",
+    "prsAtLeast": "no pull requests | at least 1 pull request | at least {n} pull requests",
+    "issues": "no issues | 1 issue | {n} issues",
+    "issuesAtLeast": "no issues | at least 1 issue | at least {n} issues",
+    "lastOpened": "last opened {time}",
+    "private": "Private",
+    "via": "In {name}",
+    "pickedCount": "None added | 1 repository added | {n} repositories added",
+    "hidden": "none hidden | 1 hidden by the filters | {n} hidden by the filters",
+    "pickShown": "Add all shown | Add the one shown | Add all {n} shown"
+  },
   "nav": {
     "views": "Views",
     "newWorkspace": "New workspace",

@@ -461,11 +461,13 @@ export class Syncer {
     const crowded = this.cache.crowded
     for (const [q, { second }] of Object.entries(crowded)) if (second < since) delete crowded[q]
     const found: Found = { items: [], changed: false, tooMany: [], crowded: {} }
-    for (const group of chunk(this.ws.sources, 8)) {
-      const searched = await this.findChanges(
-        { sources: group, from: since, to: Math.floor(started / 1000), part: null },
-        found,
-      )
+    const to = Math.floor(started / 1000)
+    // With a fine-grained token, a search finds nothing unless it says `is:issue` or `is:pr`, so each kind has its own.
+    const searches = chunk(this.ws.sources, 8).flatMap((sources) =>
+      LIST_KINDS.map((kind): ChangesSearch => ({ sources, from: since, to, kind, open: null })),
+    )
+    for (const search of searches) {
+      const searched = await this.findChanges(search, found)
       // What was found counts, but the next run looks over the same time again.
       if (searched === 'stopped') {
         if (!this.stopped) this.put(found.items.filter((item) => this.store.repos.has(item.repoId)))
@@ -498,11 +500,11 @@ export class Syncer {
    * what it finds as it goes and keeps it should it stop. Says how many changes GitHub counted, or that it stopped short.
    */
   private async findChanges(search: ChangesSearch, found: Found, whole = true): Promise<number | 'stopped'> {
-    const { sources: group, from, to, part } = search
+    const { sources: group, from, to, kind, open } = search
     // The first search runs to now, so it also finds what changed since this run started, which the next one looks at
     // again anyway. The parts of a time cut up end where it ends.
     const span = whole ? `>=${isoSecond(from)}` : `${isoSecond(from)}..${isoSecond(to)}`
-    const q = [...group.map(qualifier), ...(part ? [partTerms(part)] : []), `updated:${span}`].join(' ')
+    const q = [...group.map(qualifier), ...kindTerms(search), `updated:${span}`].join(' ')
     const items: Item[] = []
     let after: string | null = null
     let count = 0
@@ -518,8 +520,8 @@ export class Syncer {
         const crowded = by === 'repo'
         const done = crowded ? this.cache.crowded[q] : undefined
         if (done?.repos === null) return count
-        if (!searches.length && part) {
-          found.tooMany.push({ source: group[0], ...part, count })
+        if (!searches.length && open !== null) {
+          found.tooMany.push({ source: group[0], kind, open, count })
           found.crowded[q] = { second: from, repos: null }
           return count
         }
@@ -958,8 +960,6 @@ interface Part {
   kind: ListKind
   open: boolean
 }
-const PARTS: Part[] = LIST_KINDS.flatMap((kind) => [true, false].map((open) => ({ kind, open })))
-const partTerms = ({ kind, open }: Part) => `is:${KINDS[kind].item} is:${open ? 'open' : 'closed'}`
 
 /**
  * What a search for changes found, whether what it already counted changed anything, the parts of a source that
@@ -973,18 +973,26 @@ type Found = {
   crowded: Cache['crowded']
 }
 
-/** A search for changes: in some sources, from one second to another, both included, and maybe in one part of them. */
+/**
+ * A search for changes: in some sources, from one second to another, both included, of one kind, and maybe only of its
+ * open or its closed items.
+ */
 interface ChangesSearch {
   sources: Source[]
   from: number
   to: number
-  part: Part | null
+  kind: ListKind
+  open: boolean | null
 }
+const kindTerms = ({ kind, open }: ChangesSearch) => [
+  `is:${KINDS[kind].item}`,
+  ...(open === null ? [] : [`is:${open ? 'open' : 'closed'}`]),
+]
 
 /**
  * The narrower searches that find what a search finds `count` of, more than it lists, and how they're cut. Its time
  * first, in parts of about 800 each, should the changes be spread evenly, with room for some more meanwhile, down to a
- * second. Then a second source by source, then by kind, open and closed, then repository by repository, as `reposIn`
+ * second. Then a second source by source, then open and closed apart, then repository by repository, as `reposIn`
  * gives a source's. None once there's no narrower search.
  */
 function narrower(
@@ -992,7 +1000,7 @@ function narrower(
   count: number,
   reposIn: (source: Source) => Source[],
 ): { by: 'time' | 'source' | 'part' | 'repo'; searches: ChangesSearch[] } {
-  const { sources, from, to, part } = search
+  const { sources, from, to, open } = search
   if (to > from) {
     const size = Math.ceil((to - from + 1) / Math.min(to - from + 1, Math.ceil(count / (0.8 * SEARCH_MOST))))
     const searches = Array.from({ length: Math.ceil((to - from + 1) / size) }, (_, index) => ({
@@ -1003,7 +1011,7 @@ function narrower(
     return { by: 'time', searches }
   }
   if (sources.length > 1) return { by: 'source', searches: sources.map((source) => ({ ...search, sources: [source] })) }
-  if (!part) return { by: 'part', searches: PARTS.map((each) => ({ ...search, part: each })) }
+  if (open === null) return { by: 'part', searches: [true, false].map((each) => ({ ...search, open: each })) }
   return { by: 'repo', searches: reposIn(sources[0]).map((repo) => ({ ...search, sources: [repo] })) }
 }
 

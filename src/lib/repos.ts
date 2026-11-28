@@ -1,4 +1,4 @@
-import type { Item, Repo } from '@/types'
+import type { Item, Repo, RepoBasics } from '@/types'
 
 import {
   defaultFilters,
@@ -12,6 +12,7 @@ import {
   type RepoStatus,
 } from './filters'
 import { KINDS, LIST_KINDS } from './queries'
+import { CONTRIBUTION_KINDS, type Contribution, type ContributionKind } from './sources'
 import type { SyncStatus } from './sync'
 import { normalize } from './text'
 
@@ -182,11 +183,11 @@ export function pickRows(rows: RepoRow[], filters: RepoFilters, pinned: string[]
  * What a search and a status pick keep of `entries`, with how many the search finds in each status. The search reads
  * `textOf`: what the list shows of a repository, normalized.
  */
-export function findRepos<T>(
+export function findRepos<T, R extends RepoBasics>(
   entries: Iterable<T>,
-  repoOf: (entry: T) => Repo,
+  repoOf: (entry: T) => R,
   { q, status }: Pick<RepoFilters, 'q' | 'status'>,
-  textOf: (repo: Repo) => string,
+  textOf: (repo: R) => string,
 ) {
   const terms = normalize(q).split(/\s+/).filter(Boolean)
   const counts: Record<RepoStatus, number> = { active: 0, archived: 0 }
@@ -211,4 +212,82 @@ export function arrange(pinned: string[], shown: string[]): string[] {
 /** Picks or unpicks a status. Picking one drops the other. */
 export function toggleStatus(filters: Pick<RepoFilters, 'status'>, status: RepoStatus) {
   filters.status = pickChoice(filters.status, status, REPO_STATUSES)
+}
+
+export const CONTRIBUTION_SORTS = ['recent', 'most', 'name'] as const
+export type ContributionSort = (typeof CONTRIBUTION_SORTS)[number]
+
+export interface ContributionFilters {
+  q: string
+  /** None picked means both. */
+  status: RepoStatus[]
+  /** Any of them. None picked means any contribution. */
+  kinds: ContributionKind[]
+  /** None picked means any owner. */
+  owners: string[]
+  sort: ContributionSort
+}
+
+export function defaultContributionFilters(): ContributionFilters {
+  return { q: '', status: defaultRepoFilters().status, kinds: [], owners: [], sort: 'recent' }
+}
+
+const contributionText = new WeakMap<RepoBasics, string>()
+
+// The picker shows a repository's full name and description, so its search reads both.
+function pickerText(repo: RepoBasics): string {
+  let text = contributionText.get(repo)
+  if (text === undefined) {
+    text = normalize(`${repo.fullName} ${repo.description ?? ''}`)
+    contributionText.set(repo, text)
+  }
+  return text
+}
+
+const opened = (entry: Contribution) => entry.prs + entry.issues
+const byFullName = (a: Contribution, b: Contribution) => a.repo.fullName.localeCompare(b.repo.fullName)
+
+// Commits and reviews alone carry no date, so they come after what has one, the latest pushed first.
+const CONTRIBUTION_ORDER: Record<ContributionSort, (a: Contribution, b: Contribution) => number> = {
+  recent: (a, b) =>
+    (b.lastAt ?? '').localeCompare(a.lastAt ?? '') ||
+    (b.repo.pushedAt ?? '').localeCompare(a.repo.pushedAt ?? '') ||
+    byFullName(a, b),
+  most: (a, b) => opened(b) - opened(a) || b.kinds.length - a.kinds.length || byFullName(a, b),
+  name: byFullName,
+}
+
+/**
+ * The contributions the filters keep, in their order, with how many each status, kind and owner would keep. Each facet
+ * counts with the others applied, as the list's do.
+ */
+export function pickContributions(entries: Contribution[], filters: ContributionFilters) {
+  const { kept: searched } = findRepos(entries, (entry) => entry.repo, { q: filters.q, status: [] }, pickerText)
+  const ofStatus = (entry: Contribution) => !filters.status.length || filters.status.includes(statusOf(entry.repo))
+  const ofKind = (entry: Contribution) =>
+    !filters.kinds.length || entry.kinds.some((kind) => filters.kinds.includes(kind))
+  const ofOwner = (entry: Contribution) => !filters.owners.length || filters.owners.includes(entry.repo.owner)
+  const statuses: Record<RepoStatus, number> = { active: 0, archived: 0 }
+  const kinds = Object.fromEntries(CONTRIBUTION_KINDS.map((kind) => [kind, 0])) as Record<ContributionKind, number>
+  const owners = new Map<string, { count: number; avatar: string }>()
+  for (const entry of searched) {
+    const [status, kind, owner] = [ofStatus(entry), ofKind(entry), ofOwner(entry)]
+    if (kind && owner) statuses[statusOf(entry.repo)]++
+    if (status && owner) for (const each of entry.kinds) kinds[each]++
+    if (status && kind) {
+      const tally = owners.get(entry.repo.owner) ?? { count: 0, avatar: entry.repo.ownerAvatar }
+      tally.count++
+      owners.set(entry.repo.owner, tally)
+    }
+  }
+  // A picked account stays in the menu, to unpick, though nothing it has matches now.
+  for (const owner of filters.owners) {
+    if (owners.has(owner)) continue
+    const avatar = entries.find((entry) => entry.repo.owner === owner)?.repo.ownerAvatar ?? ''
+    owners.set(owner, { count: 0, avatar })
+  }
+  const shown = searched
+    .filter((entry) => ofStatus(entry) && ofKind(entry) && ofOwner(entry))
+    .toSorted(CONTRIBUTION_ORDER[filters.sort])
+  return { shown, statuses, kinds, owners }
 }
